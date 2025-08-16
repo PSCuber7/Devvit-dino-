@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Devvit Dino</title>
+<style>
+  html,body { height:100%; margin:0; background:#f7f7f7; font-family:system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial; }
+  #game { display:flex; align-items:center; justify-content:center; height:100vh; }
+  canvas { background:#f7f7f7; border:1px solid #e2e2e2; image-rendering: pixelated; }
+  #hud { position:fixed; right:12px; top:12px; font-weight:700; }
+  #leaderboard { position:fixed; left:12px; top:12px; background:rgba(255,255,255,0.9); padding:8px; border-radius:6px; box-shadow:0 2px 8px rgba(0,0,0,0.06); }
+  button { margin-top:8px; padding:6px 10px; border-radius:6px; border:1px solid #ccc; background:white; cursor:pointer; }
+</style>
+</head>
+<body>
+<div id="game">
+  <canvas id="c" width="600" height="150"></canvas>
+</div>
+<div id="hud">Score: <span id="score">0</span></div>
+<div id="leaderboard">
+  <div><strong>Leaderboard</strong></div>
+  <ol id="lb" style="margin:6px 0 0 18px; padding:0;"></ol>
+  <button id="refresh">Refresh LB</button>
+  <div style="margin-top:6px;"><small>Tap / Space to jump — mobile friendly</small></div>
+</div>
+
+<script>
+/* Minimal Dino runner on Canvas
+   Controls: Space / Touch / Click to jump.
+   Mechanics: gravity, obstacles, score increases over time, speed up.
+   When you crash: send score to parent via postMessage.
+*/
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d', { alpha: false });
+const scoreEl = document.getElementById('score');
+const lbEl = document.getElementById('lb');
+const refreshBtn = document.getElementById('refresh');
+
+let width = canvas.width, height = canvas.height;
+let groundY = height - 20;
+let dpr = Math.max(1, window.devicePixelRatio || 1);
+
+function resize() {
+  dpr = Math.max(1, window.devicePixelRatio || 1);
+  canvas.width = width * dpr;
+  canvas.height = height * dpr;
+  canvas.style.width = width + 'px';
+  canvas.style.height = height + 'px';
+  ctx.scale(dpr, dpr);
+}
+resize();
+
+let game = {
+  running: false,
+  speed: 6,
+  score: 0,
+  best: 0,
+  obstacles: [],
+  tick: 0,
+  spawnEvery: 90
+};
+
+const trex = {
+  x: 50,
+  y: groundY - 24,
+  w: 44,
+  h: 24,
+  vy: 0,
+  jumping: false
+};
+
+function reset() {
+  game.running = true;
+  game.speed = 6;
+  game.score = 0;
+  game.obstacles = [];
+  game.tick = 0;
+  trex.y = groundY - trex.h;
+  trex.vy = 0;
+  trex.jumping = false;
+  loop();
+}
+
+function spawnObstacle() {
+  const h = 20 + Math.floor(Math.random()*26);
+  game.obstacles.push({ x: width + 20, w: 12 + Math.floor(Math.random()*8), h, y: groundY - h });
+}
+
+function step() {
+  game.tick++;
+  game.score += 1;
+  if (game.tick % 200 === 0) game.speed += 0.5;
+  // spawn
+  if (game.tick % Math.max(40, Math.floor(game.spawnEvery - game.speed*6)) === 0) spawnObstacle();
+
+  // update obstacles
+  for (let i = game.obstacles.length-1; i>=0; i--) {
+    const o = game.obstacles[i];
+    o.x -= game.speed;
+    if (o.x + o.w < 0) game.obstacles.splice(i,1);
+  }
+
+  // trex physics
+  trex.vy += 1.2; // gravity
+  trex.y += trex.vy;
+  if (trex.y > groundY - trex.h) { trex.y = groundY - trex.h; trex.vy = 0; trex.jumping = false; }
+
+  // collisions
+  for (const o of game.obstacles) {
+    if (trex.x < o.x + o.w && trex.x + trex.w > o.x && trex.y < o.y + o.h && trex.y + trex.h > o.y) {
+      // crash
+      game.running = false;
+      sendScoreAndFetchLB(game.score);
+    }
+  }
+}
+
+function draw() {
+  // clear
+  ctx.fillStyle = '#f7f7f7';
+  ctx.fillRect(0,0,width,height);
+
+  // ground
+  ctx.fillStyle = '#888';
+  ctx.fillRect(0, groundY, width, 2);
+
+  // trex (simple rectangle with eye)
+  ctx.fillStyle = '#333';
+  ctx.fillRect(trex.x, trex.y, trex.w, trex.h);
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(trex.x + trex.w - 8, trex.y + 6, 4, 4);
+
+  // obstacles
+  ctx.fillStyle = '#333';
+  for (const o of game.obstacles) {
+    ctx.fillRect(o.x, o.y, o.w, o.h);
+  }
+
+  // score display drawn in HUD element (for accessibility)
+  scoreEl.textContent = String(Math.floor(game.score/10));
+}
+
+function loop() {
+  if (!game.running) return;
+  step();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+// input
+function jump() {
+  if (!game.running) { reset(); return; }
+  if (!trex.jumping) {
+    trex.vy = -16;
+    trex.jumping = true;
+  }
+}
+
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Space' || e.key === ' ') { e.preventDefault(); jump(); }
+});
+canvas.addEventListener('click', jump);
+canvas.addEventListener('touchstart', (e) => { e.preventDefault(); jump(); }, {passive:false});
+
+// postMessage bridge
+function postToParent(msg) {
+  if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+    // some webviews expose this - cover both
+    window.ReactNativeWebView.postMessage(JSON.stringify(msg));
+  } else if (window.parent) {
+    window.parent.postMessage(msg, '*');
+  }
+}
+
+// send ready to parent
+postToParent({ type: 'ready' });
+
+// function to send score + request leaderboard
+function sendScoreAndFetchLB(score) {
+  const s = Math.floor(score/10);
+  postToParent({ type: 'score', data: { score: s } });
+}
+
+// handle messages from parent (leaderboard etc)
+window.addEventListener('message', (ev) => {
+  const msg = ev.data || {};
+  if (typeof msg !== 'object') return;
+  if (msg.type === 'init') {
+    // parent passed username (optional)
+    // start the game
+    reset();
+  } else if (msg.type === 'leaderboard') {
+    const top = msg.data.top || [];
+    lbEl.innerHTML = '';
+    for (const p of top) {
+      const li = document.createElement('li');
+      li.textContent = `${p.user} — ${p.score}`;
+      lbEl.appendChild(li);
+    }
+  }
+});
+
+// refresh button triggers explicit LB request
+refreshBtn.addEventListener('click', () => {
+  postToParent({ type: 'getLeaderboard' });
+});
+
+// friendly resize handler
+window.addEventListener('resize', () => {
+  // no-op for now; canvas fixed dims for pixel feel
+});
+</script>
+</body>
+</html>
