@@ -1,7 +1,8 @@
 {
-  "name": "devvit-dino",
-  "version": "0.1.0",
-  "post": {
-    "entry": "webroot/index.html"
-  }
+  "name": "Devvit Dino",
+  "version": "1.0.0",
+  "description": "Chrome Dino clone for Reddit",
+  "platform": "web",
+  "entrypoint": "webroot/index.html",
+  "permissions": ["storage", "identity"]
 }
