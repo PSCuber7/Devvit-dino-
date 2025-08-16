@@ -1,0 +1,7 @@
+{
+  "name": "devvit-dino",
+  "version": "0.1.0",
+  "post": {
+    "entry": "webroot/index.html"
+  }
+}
