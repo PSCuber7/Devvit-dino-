@@ -1,216 +1,203 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Devvit Dino</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Reddit Dino Runner</title>
 <style>
-  html,body { height:100%; margin:0; background:#f7f7f7; font-family:system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial; }
-  #game { display:flex; align-items:center; justify-content:center; height:100vh; }
-  canvas { background:#f7f7f7; border:1px solid #e2e2e2; image-rendering: pixelated; }
-  #hud { position:fixed; right:12px; top:12px; font-weight:700; }
-  #leaderboard { position:fixed; left:12px; top:12px; background:rgba(255,255,255,0.9); padding:8px; border-radius:6px; box-shadow:0 2px 8px rgba(0,0,0,0.06); }
-  button { margin-top:8px; padding:6px 10px; border-radius:6px; border:1px solid #ccc; background:white; cursor:pointer; }
+  body { margin:0; background:#f7f7f7; overflow:hidden; }
+  canvas { display:block; margin:0 auto; image-rendering: pixelated; }
 </style>
 </head>
 <body>
-<div id="game">
-  <canvas id="c" width="600" height="150"></canvas>
-</div>
-<div id="hud">Score: <span id="score">0</span></div>
-<div id="leaderboard">
-  <div><strong>Leaderboard</strong></div>
-  <ol id="lb" style="margin:6px 0 0 18px; padding:0;"></ol>
-  <button id="refresh">Refresh LB</button>
-  <div style="margin-top:6px;"><small>Tap / Space to jump — mobile friendly</small></div>
-</div>
+<img id="sprites" src="offline-sprite.png" style="display:none;">
+<canvas id="gameCanvas"></canvas>
 
 <script>
-/* Minimal Dino runner on Canvas
-   Controls: Space / Touch / Click to jump.
-   Mechanics: gravity, obstacles, score increases over time, speed up.
-   When you crash: send score to parent via postMessage.
-*/
-
-const canvas = document.getElementById('c');
-const ctx = canvas.getContext('2d', { alpha: false });
-const scoreEl = document.getElementById('score');
-const lbEl = document.getElementById('lb');
-const refreshBtn = document.getElementById('refresh');
-
-let width = canvas.width, height = canvas.height;
-let groundY = height - 20;
-let dpr = Math.max(1, window.devicePixelRatio || 1);
-
-function resize() {
-  dpr = Math.max(1, window.devicePixelRatio || 1);
-  canvas.width = width * dpr;
-  canvas.height = height * dpr;
-  canvas.style.width = width + 'px';
-  canvas.style.height = height + 'px';
-  ctx.scale(dpr, dpr);
-}
-resize();
-
-let game = {
-  running: false,
-  speed: 6,
-  score: 0,
-  best: 0,
-  obstacles: [],
-  tick: 0,
-  spawnEvery: 90
+// --- SPRITE MAP ---
+const SPRITES = {
+  trex: { idle:{sx:44,sy:2,sw:44,sh:47}, run1:{sx:88,sy:2,sw:44,sh:47}, run2:{sx:132,sy:2,sw:44,sh:47},
+          jump:{sx:0,sy:2,sw:44,sh:47}, duck1:{sx:220,sy:2,sw:59,sh:30}, duck2:{sx:279,sy:2,sw:59,sh:30}, dead:{sx:176,sy:2,sw:44,sh:47}},
+  cactusSmall:[{sx:446,sy:2,sw:17,sh:35},{sx:464,sy:2,sw:34,sh:35},{sx:498,sy:2,sw:51,sh:35}],
+  cactusLarge:[{sx:652,sy:2,sw:25,sh:50},{sx:677,sy:2,sw:50,sh:50},{sx:727,sy:2,sw:75,sh:50}],
+  ptero:{flap1:{sx:134,sy:89,sw:46,sh:40},flap2:{sx:180,sy:89,sw:46,sh:40}},
+  cloud:{sx:86,sy:89,sw:46,sh:13},
+  ground:[{sx:2,sy:54,sw:600,sh:14}],
 };
 
-const trex = {
-  x: 50,
-  y: groundY - 24,
-  w: 44,
-  h: 24,
-  vy: 0,
-  jumping: false
-};
+// --- CANVAS SETUP ---
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+ctx.imageSmoothingEnabled = false;
 
-function reset() {
-  game.running = true;
-  game.speed = 6;
-  game.score = 0;
-  game.obstacles = [];
-  game.tick = 0;
-  trex.y = groundY - trex.h;
-  trex.vy = 0;
-  trex.jumping = false;
-  loop();
+function resizeCanvas(){
+  const scale = Math.min(window.innerWidth / 800, window.innerHeight / 200);
+  canvas.width = 800 * scale;
+  canvas.height = 200 * scale;
+  ctx.setTransform(scale,0,0,scale,0,0);
 }
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
 
-function spawnObstacle() {
-  const h = 20 + Math.floor(Math.random()*26);
-  game.obstacles.push({ x: width + 20, w: 12 + Math.floor(Math.random()*8), h, y: groundY - h });
-}
+const sprites = document.getElementById('sprites');
 
-function step() {
-  game.tick++;
-  game.score += 1;
-  if (game.tick % 200 === 0) game.speed += 0.5;
-  // spawn
-  if (game.tick % Math.max(40, Math.floor(game.spawnEvery - game.speed*6)) === 0) spawnObstacle();
+// --- GAME VARIABLES ---
+let gameState = "menu";
+let score = 0;
+let obstacles = [];
+let clouds = [];
+let frameCount = 0;
+let gameSpeed = 6;
+let trex = {x:50,y:150,w:44,h:47,vy:0,jumping:false,ducking:false,alive:true,runFrame:0};
+let leaderboard = [];
+let lastObstacleX = 800;
 
-  // update obstacles
-  for (let i = game.obstacles.length-1; i>=0; i--) {
-    const o = game.obstacles[i];
-    o.x -= game.speed;
-    if (o.x + o.w < 0) game.obstacles.splice(i,1);
-  }
+// --- HELPER FUNCTIONS ---
+function randomChoice(arr){ return arr[Math.floor(Math.random()*arr.length)]; }
 
-  // trex physics
-  trex.vy += 1.2; // gravity
-  trex.y += trex.vy;
-  if (trex.y > groundY - trex.h) { trex.y = groundY - trex.h; trex.vy = 0; trex.jumping = false; }
+function spawnObstacleIfNeeded(){
+  const minGap = 120;
+  const maxGap = 250;
+  const gap = minGap + Math.random() * (maxGap - minGap);
 
-  // collisions
-  for (const o of game.obstacles) {
-    if (trex.x < o.x + o.w && trex.x + trex.w > o.x && trex.y < o.y + o.h && trex.y + trex.h > o.y) {
-      // crash
-      game.running = false;
-      sendScoreAndFetchLB(game.score);
-    }
+  if(lastObstacleX < 800 - gap){
+    const type = Math.random() < 0.6 ? 'cactusSmall' : 'cactusLarge';
+    const obsArr = SPRITES[type];
+    const obs = {...randomChoice(obsArr), x:800, y:200-obsArr[0].sh};
+    obstacles.push(obs);
+    lastObstacleX = 800;
   }
 }
 
-function draw() {
-  // clear
-  ctx.fillStyle = '#f7f7f7';
-  ctx.fillRect(0,0,width,height);
-
-  // ground
-  ctx.fillStyle = '#888';
-  ctx.fillRect(0, groundY, width, 2);
-
-  // trex (simple rectangle with eye)
-  ctx.fillStyle = '#333';
-  ctx.fillRect(trex.x, trex.y, trex.w, trex.h);
-  ctx.fillStyle = '#fff';
-  ctx.fillRect(trex.x + trex.w - 8, trex.y + 6, 4, 4);
-
-  // obstacles
-  ctx.fillStyle = '#333';
-  for (const o of game.obstacles) {
-    ctx.fillRect(o.x, o.y, o.w, o.h);
-  }
-
-  // score display drawn in HUD element (for accessibility)
-  scoreEl.textContent = String(Math.floor(game.score/10));
-}
-
-function loop() {
-  if (!game.running) return;
-  step();
-  draw();
-  requestAnimationFrame(loop);
-}
-
-// input
-function jump() {
-  if (!game.running) { reset(); return; }
-  if (!trex.jumping) {
-    trex.vy = -16;
-    trex.jumping = true;
+function spawnPteroIfNeeded(){
+  if(score < 500) return;
+  const lastPteroX = obstacles.filter(o=>o.flapFrame!==undefined).map(o=>o.x).pop() || 0;
+  if(lastPteroX < 800 - (200 + Math.random()*200)){
+    const y = 100 + Math.random()*50;
+    const ptero = {...SPRITES.ptero.flap1, x:800, y, flapFrame:0};
+    obstacles.push(ptero);
   }
 }
 
-window.addEventListener('keydown', (e) => {
-  if (e.code === 'Space' || e.key === ' ') { e.preventDefault(); jump(); }
-});
-canvas.addEventListener('click', jump);
-canvas.addEventListener('touchstart', (e) => { e.preventDefault(); jump(); }, {passive:false});
-
-// postMessage bridge
-function postToParent(msg) {
-  if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
-    // some webviews expose this - cover both
-    window.ReactNativeWebView.postMessage(JSON.stringify(msg));
-  } else if (window.parent) {
-    window.parent.postMessage(msg, '*');
-  }
+function spawnCloud(){
+  const cloud = {...SPRITES.cloud, x:800, y:Math.random()*50};
+  clouds.push(cloud);
 }
 
-// send ready to parent
-postToParent({ type: 'ready' });
-
-// function to send score + request leaderboard
-function sendScoreAndFetchLB(score) {
-  const s = Math.floor(score/10);
-  postToParent({ type: 'score', data: { score: s } });
+function checkCollision(rect1, rect2){
+  const padding = 5;
+  return !(rect1.x+rect1.w-padding<rect2.x || rect1.x+padding>rect2.x+rect2.sw || rect1.y+rect1.h-padding<rect2.y || rect1.y+padding>rect2.y+rect2.sh);
 }
 
-// handle messages from parent (leaderboard etc)
-window.addEventListener('message', (ev) => {
-  const msg = ev.data || {};
-  if (typeof msg !== 'object') return;
-  if (msg.type === 'init') {
-    // parent passed username (optional)
-    // start the game
-    reset();
-  } else if (msg.type === 'leaderboard') {
-    const top = msg.data.top || [];
-    lbEl.innerHTML = '';
-    for (const p of top) {
-      const li = document.createElement('li');
-      li.textContent = `${p.user} — ${p.score}`;
-      lbEl.appendChild(li);
-    }
+// --- Devvit Leaderboard Functions ---
+async function submitScore(score){
+  try{
+    const username = await Devvit.user.getUsername();
+    await Devvit.storage.push('dinoLeaderboard', {username, score, timestamp: Date.now()});
+  }catch(e){ console.error("Error submitting score:", e); }
+}
+
+async function loadLeaderboard(){
+  try{
+    const allScores = await Devvit.storage.get('dinoLeaderboard') || [];
+    allScores.sort((a,b)=>b.score-b.score);
+    return allScores.slice(0,5);
+  }catch(e){ console.error(e); return []; }
+}
+
+// --- GAME FUNCTIONS ---
+async function endGame(){
+  gameState="dead";
+  trex.alive=false;
+  await submitScore(score);
+  leaderboard = await loadLeaderboard();
+}
+
+function startGame(){
+  gameState="running";
+  trex={x:50,y:150,w:44,h:47,vy:0,jumping:false,ducking:false,alive:true,runFrame:0};
+  obstacles=[]; clouds=[]; score=0; frameCount=0; gameSpeed=6; lastObstacleX=800;
+}
+
+// --- GAME LOOP ---
+function update(){
+  ctx.clearRect(0,0,800,200);
+  frameCount++;
+
+  ctx.fillStyle="#333"; ctx.font="20px sans-serif"; ctx.textAlign="center";
+
+  if(gameState==="menu"){
+    ctx.fillText("PRESS SPACE OR TAP TO START",400,100);
+    requestAnimationFrame(update);
+    return;
   }
-});
 
-// refresh button triggers explicit LB request
-refreshBtn.addEventListener('click', () => {
-  postToParent({ type: 'getLeaderboard' });
-});
+  if(gameState==="dead"){
+    ctx.fillText("GAME OVER",400,80);
+    ctx.fillText("SCORE: "+score,400,110);
+    ctx.fillText("PRESS SPACE OR TAP TO RESTART",400,140);
+    leaderboard.forEach((p,i)=>{ ctx.fillText(`${i+1}. ${p.username} - ${p.score}`, 400, 160 + i*20); });
+    requestAnimationFrame(update);
+    return;
+  }
 
-// friendly resize handler
-window.addEventListener('resize', () => {
-  // no-op for now; canvas fixed dims for pixel feel
-});
+  // Clouds
+  clouds.forEach(c=>{c.x-=0.5; ctx.drawImage(sprites,c.sx,c.sy,c.sw,c.sh,c.x,c.y,c.sw,c.sh);});
+  if(frameCount%200===0) spawnCloud();
+
+  // Ground
+  ctx.drawImage(sprites,SPRITES.ground[0].sx,SPRITES.ground[0].sy,SPRITES.ground[0].sw,SPRITES.ground[0].sh,0,200-14,800,14);
+
+  // Obstacles
+  obstacles.forEach((o,i)=>{
+    o.x-=gameSpeed;
+    if(o.flapFrame!==undefined){
+      o.flapFrame = (o.flapFrame+1)%2;
+      const f = o.flapFrame===0 ? SPRITES.ptero.flap1 : SPRITES.ptero.flap2;
+      ctx.drawImage(sprites,f.sx,f.sy,f.sw,f.sh,o.x,o.y,f.sw,f.sh);
+    } else ctx.drawImage(sprites,o.sx,o.sy,o.sw,o.sh,o.x,o.y,o.sw,o.sh);
+
+    if(checkCollision(trex,o) && trex.alive) endGame();
+    if(o.x+o.sw<0) obstacles.splice(i,1);
+  });
+
+  // Spawn logic like Chrome Dino
+  spawnObstacleIfNeeded();
+  spawnPteroIfNeeded();
+
+  // T-Rex Physics
+  if(!trex.jumping) trex.vy=0; else trex.vy+=0.6;
+  trex.y+=trex.vy;
+  if(trex.y>=150){trex.y=150; trex.jumping=false; trex.vy=0;}
+  if(!trex.jumping) trex.runFrame=(trex.runFrame+1)%2;
+  const trexFrame = trex.jumping ? SPRITES.trex.jump : trex.runFrame===0 ? SPRITES.trex.run1 : SPRITES.trex.run2;
+  ctx.drawImage(sprites,trexFrame.sx,trexFrame.sy,trexFrame.sw,trexFrame.sh,trex.x,trex.y,trex.w,trex.h);
+
+  // Score
+  ctx.fillStyle="#333"; ctx.font="20px sans-serif"; ctx.textAlign="left";
+  ctx.fillText("Score: "+score,680,30);
+  score++;
+
+  // Speed scaling
+  if(score%100===0) gameSpeed +=0.1;
+
+  lastObstacleX -= gameSpeed;
+
+  requestAnimationFrame(update);
+}
+
+// --- INPUT ---
+function jump(){
+  if(gameState==="menu") startGame();
+  else if(gameState==="running" && !trex.jumping){trex.vy=-12; trex.jumping=true;}
+  else if(gameState==="dead") startGame();
+}
+
+document.addEventListener("keydown", e=>{ if(e.code==="Space") jump(); });
+canvas.addEventListener("touchstart", jump);
+
+// --- START LOOP ---
+update();
 </script>
 </body>
 </html>
